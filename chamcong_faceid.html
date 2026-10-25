@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Demo Chấm Công Khuôn Mặt</title>
+    <!-- Tải thư viện face-api.js từ CDN -->
+    <script defer src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; background: #f4f7f6; padding: 20px; }
+        .container { display: flex; flex-direction: column; align-items: center; }
+        /* Vùng chứa video và canvas đè lên nhau */
+        #video-container { position: relative; width: 100%; max-width: 640px; border-radius: 10px; overflow: hidden; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+        video, canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+        /* Trick để giữ tỷ lệ khung hình */
+        #video-container::before { content: ""; display: block; padding-top: 75%; /* Tỷ lệ 4:3 */ }
+        
+        .controls { margin-top: 20px; }
+        button { padding: 10px 20px; margin: 5px; font-size: 16px; cursor: pointer; border: none; border-radius: 5px; color: white; font-weight: bold; }
+        #btn-register { background-color: #007bff; }
+        #btn-checkin { background-color: #28a745; }
+        button:disabled { background-color: #cccccc; cursor: not-allowed; }
+        #status { margin: 15px; font-weight: bold; color: #d9534f; }
+        #log { margin-top: 20px; padding: 15px; background: #fff; width: 100%; max-width: 600px; border-radius: 5px; text-align: left; }
+    </style>
+</head>
+<body>
+
+    <h2>Hệ Thống Chấm Công FaceID (Demo)</h2>
+    <p id="status">Đang tải mô hình AI... Vui lòng đợi (khoảng 5-10s)</p>
+
+    <div class="container">
+        <div id="video-container">
+            <video id="video" autoplay muted playsinline></video>
+            <canvas id="canvas"></canvas>
+        </div>
+
+        <div class="controls">
+            <button id="btn-register" disabled>1. Đăng ký nhân viên (Lấy mẫu)</button>
+            <button id="btn-checkin" disabled>2. Chấm công ngay</button>
+        </div>
+
+        <div id="log">
+            <strong>Nhật ký:</strong>
+            <ul id="log-list"></ul>
+        </div>
+    </div>
+
+    <script>
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const statusText = document.getElementById('status');
+        const btnRegister = document.getElementById('btn-register');
+        const btnCheckin = document.getElementById('btn-checkin');
+        const logList = document.getElementById('log-list');
+
+        let faceMatcher = null; // Biến lưu trữ dữ liệu khuôn mặt đã đăng ký
+
+        // Hàm ghi log ra màn hình
+        function log(message) {
+            const li = document.createElement('li');
+            li.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            logList.prepend(li);
+        }
+
+        // 1. Tải mô hình AI từ Github (Face API cần các model này để nhận diện)
+        const MODEL_URL = 'https://justadudewhohacks.github.io/face-api.js/models';
+        
+        Promise.all([
+            faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL), // Nhận diện có mặt hay không
+            faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL), // Định vị các điểm trên mặt (mắt, mũi, miệng)
+            faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL) // Trích xuất đặc trưng khuôn mặt (để so sánh)
+        ]).then(startCamera).catch(err => {
+            statusText.textContent = "Lỗi tải mô hình AI. Vui lòng kiểm tra kết nối mạng!";
+            console.error(err);
+        });
+
+        // 2. Mở Camera
+        function startCamera() {
+            statusText.textContent = "Mô hình đã tải xong. Đang mở camera...";
+            statusText.style.color = "#5bc0de";
+
+            navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } }) // facingMode: "user" ưu tiên camera trước trên điện thoại
+                .then(stream => {
+                    video.srcObject = stream;
+                    statusText.textContent = "Hệ thống đã sẵn sàng!";
+                    statusText.style.color = "#28a745";
+                    btnRegister.disabled = false;
+                })
+                .catch(err => {
+                    statusText.textContent = "Không thể truy cập camera. Vui lòng cấp quyền!";
+                    console.error(err);
+                });
+        }
+
+        // 3. Vẽ khung xanh nhận diện khuôn mặt liên tục (Real-time)
+        video.addEventListener('play', () => {
+            const displaySize = { width: video.offsetWidth, height: video.offsetHeight };
+            faceapi.matchDimensions(canvas, displaySize);
+
+            setInterval(async () => {
+                // Quét xem có khuôn mặt nào trong camera không
+                const detections = await faceapi.detectAllFaces(video).withFaceLandmarks();
+                const resizedDetections = faceapi.resizeResults(detections, displaySize);
+                
+                // Xóa khung cũ và vẽ khung mới
+                canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+                faceapi.draw.drawDetections(canvas, resizedDetections);
+            }, 100); // 100ms quét 1 lần
+        });
+
+        // 4. Xử lý Nút Đăng Ký Khuôn Mặt
+        btnRegister.addEventListener('click', async () => {
+            log("Đang quét để đăng ký khuôn mặt...");
+            // Quét 1 khuôn mặt và lấy ra descriptor (chuỗi ma trận số đặc trưng của khuôn mặt đó)
+            const detection = await faceapi.detectSingleFace(video).withFaceLandmarks().withFaceDescriptor();
+            
+            if (detection) {
+                const faceDescriptor = detection.descriptor;
+                
+                // Tạo một bản ghi lưu lại tên "Nhân Viên A" với khuôn mặt vừa quét
+                const labeledDescriptor = new faceapi.LabeledFaceDescriptors("Nguyễn Văn A", [faceDescriptor]);
+                
+                // Lưu vào hệ thống so khớp (Độ sai số cho phép là 0.6, càng thấp càng khắt khe)
+                faceMatcher = new faceapi.FaceMatcher([labeledDescriptor], 0.6);
+                
+                log("✅ Đăng ký thành công cho: Nguyễn Văn A");
+                btnCheckin.disabled = false; // Mở khóa nút chấm công
+            } else {
+                log("❌ Không tìm thấy khuôn mặt. Vui lòng nhìn thẳng vào camera!");
+                alert("Không tìm thấy khuôn mặt. Vui lòng nhìn thẳng vào camera!");
+            }
+        });
+
+        // 5. Xử lý Nút Chấm Công
+        btnCheckin.addEventListener('click', async () => {
+            log("Đang phân tích để chấm công...");
+            const detection = await faceapi.detectSingleFace(video).withFaceLandmarks().withFaceDescriptor();
+
+            if (detection) {
+                // Đem khuôn mặt vừa quét được so sánh với CSDL (faceMatcher)
+                const bestMatch = faceMatcher.findBestMatch(detection.descriptor);
+
+                if (bestMatch.label !== 'unknown') {
+                    log(`🎉 CHẤM CÔNG THÀNH CÔNG: ${bestMatch.label} (Độ tin cậy: ${((1 - bestMatch.distance)*100).toFixed(0)}%)`);
+                    alert(`✅ Chấm công thành công!\nXin chào: ${bestMatch.label}`);
+                } else {
+                    log("⛔ Cảnh báo: Khuôn mặt lạ, không có trong hệ thống!");
+                    alert("Khuôn mặt chưa được đăng ký!");
+                }
+            } else {
+                log("❌ Lỗi: Không nhìn thấy rõ khuôn mặt!");
+            }
+        });
+    </script>
+</body>
+</html>
